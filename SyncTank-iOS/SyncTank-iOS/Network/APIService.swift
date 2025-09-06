@@ -11,7 +11,7 @@ final class APIService {
     static let shared = APIService()
     private init() {}
     
-    func saveDocs(_ item: DashItemRequest) async throws -> String {
+    func saveDocs(_ item: DashItemRequest) async -> Result<SaveDocsResModel, APIError> {
         let url = API.baseURL.appendingPathComponent(API.Path.saveDocs)
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -19,63 +19,75 @@ final class APIService {
         
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
-        request.httpBody = try encoder.encode(item)
         
-        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let body = try? encoder.encode(item) else {
+            return .failure(.encoding)
+        }
+        
+        request.httpBody = body
+        
+        guard let (data, response) = try? await URLSession.shared.data(for: request) else {
+            return .failure(.networkError)
+        }
         
         guard let httpResponse = response as? HTTPURLResponse else {
-            throw APIError.invalidResponse
+            return .failure(.invalidResponse)
         }
         
         switch httpResponse.statusCode {
         case 200:
-            return String(data: data, encoding: .utf8) ?? "Success"
+            guard let decodedResponse = try? JSONDecoder().decode(BaseModel<SaveDocsResModel>.self, from: data) else {
+                return .failure(.decoding)
+            }
+            return .success(decodedResponse.data)
         case 422:
-            throw APIError.validation("Validation failed: \(String(data: data, encoding: .utf8) ?? "")")
+            return .failure(.validation("Validation failed: \(String(data: data, encoding: .utf8) ?? "")"))
+        case 500:
+            guard let errorMessage = try? JSONDecoder().decode(BaseModel<ErrorResModel>.self, from: data) else {
+                return .failure(.decoding)
+            }
+            return .failure(.serverError(errorMessage.detail))
         default:
-            throw APIError.httpError(statusCode: httpResponse.statusCode)
+            return .failure(.unknown)
         }
     }
     
-    func fetchDocs() async throws -> [DashItem] {
+    func fetchDocs() async -> Result<[DashItem], APIError> {
         let url = API.baseURL.appendingPathComponent(API.Path.fetchDocs)
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         
-        do {
-            let configuration = URLSessionConfiguration.default
-            let session = URLSession(configuration: configuration)
-            let (data, response) = try await session.data(for: request)
-            
-            guard let httpResponse = response as? HTTPURLResponse else {
-                throw APIError.invalidResponse
+        let configuration = URLSessionConfiguration.default
+        let session = URLSession(configuration: configuration)
+        
+        guard let (data, response) = try? await session.data(for: request) else {
+            return .failure(.networkError)
+        }
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            return .failure(.invalidResponse)
+        }
+        
+        switch httpResponse.statusCode {
+        case 200:
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            do {
+                let model = try decoder.decode(BaseModel<[DashItem]>.self, from: data)
+                return .success(model.data)
+            } catch {
+                return .failure(.decoding)
             }
             
-            switch httpResponse.statusCode {
-            case 200..<300:
-                let decoder = JSONDecoder()
-                decoder.keyDecodingStrategy = .convertFromSnakeCase
-                do {
-                    return try decoder.decode([DashItem].self, from: data)
-                } catch {
-                    print(error)
-                    throw APIError.decoding("Failed to decode response: \(error)")
-                }
-                
-            case 400..<500:
-                throw APIError.clientError(statusCode: httpResponse.statusCode)
-                
-            case 500..<600:
-                throw APIError.serverError(statusCode: httpResponse.statusCode)
-                
-            default:
-                throw APIError.httpError(statusCode: httpResponse.statusCode)
+        case 422:
+            return .failure(.validation("Validation failed"))
+        case 500:
+            guard let errorMessage = try? JSONDecoder().decode(BaseModel<ErrorResModel>.self, from: data) else {
+                return .failure(.decoding)
             }
-            
-        } catch let error as APIError {
-            throw error
-        } catch {
-            throw APIError.network("Unexpected error: \(error.localizedDescription)")
+            return .failure(.serverError(errorMessage.detail))
+        default:
+            return .failure(.unknown)
         }
     }
 }

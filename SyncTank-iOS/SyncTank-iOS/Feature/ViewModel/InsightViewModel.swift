@@ -62,45 +62,47 @@ final class InsightViewModel: ObservableObject {
         isFetching = true
         
         do {
-            let docs = try await APIService.shared.fetchDocs()
-            await MainActor.run {
-                // 디버깅 로그 추가
-                print(" 받아온 데이터 개수: \(docs.count)")
-                for (index, doc) in docs.enumerated() {
-                    print("📱 [\(index)] ID: \(doc.id), Kind: \(doc.kind), Title: \(doc.title), tile: \(doc.leftTime)")
+            let fetchDocsResult = await APIService.shared.fetchDocs()
+            switch fetchDocsResult {
+            case .success(let docs):
+                await MainActor.run {
+                    // 디버깅 로그 추가
+                    print(" 받아온 데이터 개수: \(docs.count)")
+                    for (index, doc) in docs.enumerated() {
+                        print("📱 [\(index)] ID: \(doc.id), Kind: \(doc.kind), Title: \(doc.title), tile: \(doc.leftTime)")
+                    }
+                    
+                    withAnimation {
+                        self.items = docs
+                    }
+                    
+                    // items 시간순 정렬
+                    let times = self.items.filter({
+                        $0.leftTime != nil
+                    })
+                    
+                    let remains = self.items.filter({
+                        $0.leftTime == nil
+                    })
+                    
+                    self.items = times.sorted(by: { $0.leftTime! < $1.leftTime! }) + remains
+                    
+                    let firstItem = times.first
+                    
+                    guard let firstItem = firstItem else { return }
+                    
+                    sendLocalNotification(item: firstItem)
+                    
+                    // 필터링된 데이터 확인
+                    print("🔍 Urgent 탭 데이터: \(self.items.filter { $0.kind == .plan }.count)개")
+                    print("🔍 Insight 탭 데이터: \(self.items.filter { $0.kind == .insight }.count)개")
+                    
+                    self.fetchSuccessText = "요청이 완료되었습니다."
                 }
-                
-                withAnimation {
-                    self.items = docs
-                }
-                
-                // items 시간순 정렬
-                let times = self.items.filter({
-                    $0.leftTime != nil
-                })
-                
-                let remains = self.items.filter({
-                    $0.leftTime == nil
-                })
-                
-                self.items = times.sorted(by: { $0.leftTime! < $1.leftTime! }) + remains
-                
-                let firstItem = times.first
-                
-                guard let firstItem = firstItem else { return }
-                
-                sendLocalNotification(item: firstItem)
-                
-                // 필터링된 데이터 확인
-                print("🔍 Urgent 탭 데이터: \(self.items.filter { $0.kind == .plan }.count)개")
-                print("🔍 Insight 탭 데이터: \(self.items.filter { $0.kind == .insight }.count)개")
-                
-                self.fetchSuccessText = "요청이 완료되었습니다."
+            case .failure(let error):
+                print("❌ Fetch 실패: \(error)")
             }
-        } catch {
-            print("❌ Fetch 실패: \(error.localizedDescription)")
         }
-        
         isFetching = false
     }
     
@@ -154,8 +156,13 @@ final class InsightViewModel: ObservableObject {
                 attachment: attachment?.toRequest()
             )
             
-            let result = try await APIService.shared.saveDocs(request)
-            print("✅ 저장 성공: \(result)")
+            let result = await APIService.shared.saveDocs(request)
+            switch result {
+            case .success(let success):
+                print("success: \(success)")
+            case .failure(let failure):
+                print("failure: \(failure)")
+            }
             
             await fetchAllDocs()  // 서버 기준으로 다시 가져오기
             isFetching = false
